@@ -1,16 +1,17 @@
 package com.testforth;
 
-import com.googlecode.lanterna.terminal.Terminal;
+import com.testforth.line.ReadLine;
+import com.testforth.line.ReadLine2;
 import com.testforth.terminal.TerminalWindow;
 import com.testforth.words.AbstractWord;
 import com.testforth.words.BundledWords;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.StringJoiner;
 
 /**
  * @author Dmitry
@@ -23,6 +24,7 @@ public class Forth {
 
     public Forth(TerminalWindow console) {
         this.console = console;
+        console.setCursorXY(0, 5);
         stack = new ArrayList<>();
         fillBundledWords();
     }
@@ -99,20 +101,6 @@ public class Forth {
         }
     }
 
-    private void printStack() {
-
-        StringBuilder sb = new StringBuilder();
-        StringJoiner sj = new StringJoiner(",");
-        for (Object o : stack) {
-            sj.add(o.toString());
-        }
-        String result = sj.toString();
-        if (result.length() > 30) {
-            result = "..." + result.substring(result.length() - 27);
-        }
-        console.putString("[" + result + "]");
-    }
-
     private void ensureNewLine() {
         if (console.getCursorX() != 0) {
             console.putChar('\n');
@@ -123,9 +111,13 @@ public class Forth {
         while (true) {
             try {
                 ensureNewLine();
-                printStack();
-                console.putChar('>');
-                var line = console.readLine();
+                console.putString("----->");
+                ReadLine2 readLine = new ReadLine2(console);
+                readLine.loadLines(Arrays.asList(
+                        "He has starred in numerous other projects. His television series include",
+                        "fortunes of War for which he won an International Emmy Award.",
+                        "Branagh directed and starred in the romantic thriller Dead Again"));
+                var line = readLine.getLine();
                 if (line.equalsIgnoreCase("exit")) {
                     break;
                 }
@@ -134,6 +126,7 @@ public class Forth {
                 }
             } catch (Exception ex) {
                 ensureNewLine();
+                ex.printStackTrace();
                 console.putString("ERROR: " + ex.getMessage());
             }
         }

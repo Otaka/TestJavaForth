@@ -25,14 +25,17 @@ public class TerminalWindow extends JFrame {
 
     private final int charWidth;
     private final int charHeight;
-    private final byte[] buffer = new byte[80 * 25 * 2];
     private final AtomicInteger dirty = new AtomicInteger(0);
     private Timer timer;
     private final JPanel drawPanel;
     private int cursorX = 0;
     private int cursorY = 0;
     private BlockingQueue<Integer> keysQueue = new ArrayBlockingQueue<>(20);
-    private boolean shiftPressed=false;
+    
+    private final byte[] buffer = new byte[80 * 25 * 2];
+    private boolean shiftPressed = false;
+    private boolean altPressed = false;
+    private boolean ctrlPressed = false;
 
     private final Color[] backgroundColors = new Color[]{
         new Color(0, 0, 0),
@@ -133,27 +136,51 @@ public class TerminalWindow extends JFrame {
         addKeyListener(new KeyAdapter() {
             @Override
             public void keyPressed(KeyEvent e) {
-                System.out.println("" + e.getKeyCode());
                 Integer keyCode = KeyCodes.keyCode2LanceletKeyCode.get(e.getKeyCode());
                 if (keyCode != null) {
-                    if(keyCode==13){//shift
-                        shiftPressed=true;
-                    }
+                     checkPressedModifierKey(keyCode, true);
                     keysQueue.offer(keyCode);
                 }
+                e.consume();
             }
 
             @Override
             public void keyReleased(KeyEvent e) {
-                Integer keyCode = KeyCodes.keyCode2LanceletKeyCode.get(e.getKeyCode());
+                   Integer keyCode = KeyCodes.keyCode2LanceletKeyCode.get(e.getKeyCode());
                 if (keyCode != null) {
-                    if(keyCode==13){//shift
-                        shiftPressed=false;
-                    }
+                    checkPressedModifierKey(keyCode, false);
                 }
+                e.consume();
             }
-            
         });
+    }
+
+    public boolean isAltPressed() {
+        return altPressed;
+    }
+
+    public boolean isCtrlPressed() {
+        return ctrlPressed;
+    }
+
+    public boolean isShiftPressed() {
+        return shiftPressed;
+    }
+
+    private void checkPressedModifierKey(int keyCode, boolean valueToSet) {
+        switch (keyCode) {
+            case KEY_SHIFT:
+                shiftPressed = valueToSet;
+                break;
+            case KEY_ALT:
+                altPressed = valueToSet;
+                break;
+            case KEY_CONTROL:
+                ctrlPressed = valueToSet;
+                break;
+            default:
+                break;
+        }
     }
 
     private void startRedrawTimer() {
@@ -198,6 +225,7 @@ public class TerminalWindow extends JFrame {
         }
         this.cursorX = cursorX;
         this.cursorY = cursorY;
+        System.out.println("CursorXY "+this.cursorX+" "+this.cursorY);
 
         dirty.addAndGet(1);
     }
@@ -210,73 +238,18 @@ public class TerminalWindow extends JFrame {
         return cursorY;
     }
 
-    public String readLine() {
-        StringBuilder sb = new StringBuilder();
-        while (true) {
-            char c = getch();
-            putChar(c);
-            if (c == '\n') {
-                break;
-            }
-            sb.append(c);
-        }
-        return sb.toString();
-    }
-    
-    public char getch(){
-        while(true){
-            int key=waitKey();
-            if(key>=40&&key<=49){
-                return (char) ('0'+(key-40));
-            }
-            if(key>=50&&key<=75){
-                if(shiftPressed){
-                    return (char) ('A'+(key-50));
-                }
-                return (char) ('a'+(key-50));
-            }
-            if(key==19){
-                if(shiftPressed){
-                    return '<';
-                }
-                return ',';
-            }
-            if(key==20){
-                if(shiftPressed){
-                    return '>';
-                }
-                return '.';
-            }
-            if(key==76){
-                if(shiftPressed){
-                    return '?';
-                }
-                return '/';
-            }
-            if(key==28){
-                if(shiftPressed){
-                    return '_';
-                }
-                return '-';
-            }
-            if(key==36){
-                if(shiftPressed){
-                    return '+';
-                }
-                return '=';
-            }
-            if(key==16){
-                return '\n';
-            }
-        }
-    }
-    
     public int waitKey() {
         try {
-            return keysQueue.poll(99999, TimeUnit.DAYS);
+            while (isVisible()) {
+                Integer key = keysQueue.poll(1, TimeUnit.SECONDS);
+                if (key != null) {
+                    return key;
+                }
+            }
         } catch (InterruptedException ex) {
             throw new IllegalStateException(ex);
         }
+        return 0;
     }
 
     public void putString(String str) {
@@ -286,15 +259,120 @@ public class TerminalWindow extends JFrame {
     }
 
     public void putChar(char c) {
-        if(c=='\n'){
-            setCursorXY(0, getCursorY()+1);
+        if (c == '\n') {
+            setCursorXY(0, getCursorY() + 1);
             return;
         }
         int pos = (getCursorY() * 80 + getCursorX());
-        buffer[pos*2] = (byte) c;
+        buffer[pos * 2] = (byte) c;
         pos++;
         cursorY = pos / 80;
         cursorX = pos - (cursorY * 80);
         dirty.addAndGet(1);
     }
+    
+    public void putChar(char c, int x, int y) {
+        int pos = (y * 80 + x);
+        int byteOffset=pos*2;
+        buffer[byteOffset] = (byte) c;
+        buffer[byteOffset+1] =(byte) 0xF0;
+        dirty.addAndGet(1);
+    }
+    
+    /*
+    read bytes from framebuffer. buffer.length = charsCount*2
+    */
+    public byte[] readBuffer(int x, int y, int charsCount) {
+        byte[]_buffer=new byte[charsCount*2];
+        int pos = (y * 80 + x)*2;
+        for(int i=0;i<charsCount*2;i++){
+            _buffer[i] = buffer[pos+i];
+        }
+        return _buffer;
+    }
+    
+    public void putChar(byte c, byte attribute, int x, int y) {
+        int pos = (y * 80 + x);
+        buffer[pos * 2] = c;
+        buffer[pos * 2+1] =attribute;
+        dirty.addAndGet(1);
+    }
+
+    public static final int KEY_ESCAPE = 0;
+    public static final int KEY_F1 = 1;
+    public static final int KEY_F2 = 2;
+    public static final int KEY_F3 = 3;
+    public static final int KEY_F4 = 4;
+    public static final int KEY_F5 = 5;
+    public static final int KEY_F6 = 6;
+    public static final int KEY_F7 = 7;
+    public static final int KEY_F8 = 8;
+    public static final int KEY_F9 = 9;
+    public static final int KEY_F10 = 10;
+    public static final int KEY_F11 = 11;
+    public static final int KEY_F12 = 12;
+    public static final int KEY_SHIFT = 13;
+    public static final int KEY_CONTROL = 14;
+    public static final int KEY_ALT = 15;
+    public static final int KEY_HOME = 16;
+    public static final int KEY_END = 17;
+    public static final int KEY_PAGE_UP = 18;
+    public static final int KEY_PAGE_DOWN = 19;
+    public static final int KEY_UP = 20;
+    public static final int KEY_DOWN = 21;
+    public static final int KEY_LEFT = 22;
+    public static final int KEY_RIGHT = 23;
+    public static final int KEY_BACK_SPACE = 24;
+    public static final int KEY_DELETE = 25;
+    public static final int KEY_ENTER = 26;
+    public static final int KEY_TAB = 27;
+    public static final int KEY_SPACE = 28;
+    public static final int KEY_BACK_QUOTE = 29;
+    public static final int KEY_MINUS = 30;
+    public static final int KEY_EQUALS = 31;
+    public static final int KEY_QUOTE = 32;
+    public static final int KEY_SEMICOLON = 33;
+    public static final int KEY_OPEN_BRACKET = 34;
+    public static final int KEY_CLOSE_BRACKET = 35;
+    public static final int KEY_BACK_SLASH = 36;
+    public static final int KEY_SLASH = 37;
+    public static final int KEY_COMMA = 38;
+    public static final int KEY_PERIOD = 39;
+    public static final int KEY_0 = 50;
+    public static final int KEY_1 = 51;
+    public static final int KEY_2 = 52;
+    public static final int KEY_3 = 53;
+    public static final int KEY_4 = 54;
+    public static final int KEY_5 = 55;
+    public static final int KEY_6 = 56;
+    public static final int KEY_7 = 57;
+    public static final int KEY_8 = 58;
+    public static final int KEY_9 = 59;
+    public static final int KEY_A = 60;
+    public static final int KEY_B = 61;
+    public static final int KEY_C = 62;
+    public static final int KEY_D = 63;
+    public static final int KEY_E = 64;
+    public static final int KEY_F = 65;
+    public static final int KEY_G = 66;
+    public static final int KEY_H = 67;
+    public static final int KEY_I = 68;
+    public static final int KEY_J = 69;
+    public static final int KEY_K = 70;
+    public static final int KEY_L = 71;
+    public static final int KEY_M = 72;
+    public static final int KEY_N = 73;
+    public static final int KEY_O = 74;
+    public static final int KEY_P = 75;
+    public static final int KEY_Q = 76;
+    public static final int KEY_R = 77;
+    public static final int KEY_S = 78;
+    public static final int KEY_T = 79;
+    public static final int KEY_U = 80;
+    public static final int KEY_V = 81;
+    public static final int KEY_W = 82;
+    public static final int KEY_X = 83;
+    public static final int KEY_Y = 84;
+    public static final int KEY_Z = 85;
+
 }

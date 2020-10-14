@@ -1,17 +1,17 @@
 package com.testforth;
 
 import com.testforth.line.ReadLine;
-import com.testforth.line.ReadLine2;
 import com.testforth.terminal.TerminalWindow;
 import com.testforth.words.AbstractWord;
 import com.testforth.words.BundledWords;
+import java.io.InputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Scanner;
 
 /**
  * @author Dmitry
@@ -20,13 +20,30 @@ public class Forth {
 
     private final TerminalWindow console;
     private final List<Object> stack;
+    private ReadLine readLine;
     private final Map<String, AbstractWord> dictionary = new HashMap<>();
 
     public Forth(TerminalWindow console) {
         this.console = console;
-        console.setCursorXY(0, 5);
+        readLine = new ReadLine(console);
+        loadTestLines();
         stack = new ArrayList<>();
         fillBundledWords();
+    }
+
+    private void loadTestLines() {
+        //readLine.loadLines(loadLines("/resources/text_numbers.txt"));
+    }
+
+    private List<String> loadLines(String str) {
+        List<String> lines = new ArrayList<>();
+        InputStream inputStream = Forth.class.getResourceAsStream(str);
+        Scanner scanner = new Scanner(inputStream);
+        while (scanner.hasNextLine()) {
+            lines.add(scanner.nextLine());
+        }
+
+        return lines;
     }
 
     private void fillBundledWords() {
@@ -93,7 +110,7 @@ public class Forth {
             } else {
                 AbstractWord word = dictionary.get(str);
                 if (word == null) {
-                    console.putString("Word [" + str + "] is not found");
+                    console.printString("Word [" + str + "] is not found");
                     return;
                 }
                 word.execute(this);
@@ -101,23 +118,15 @@ public class Forth {
         }
     }
 
-    private void ensureNewLine() {
-        if (console.getCursorX() != 0) {
-            console.putChar('\n');
-        }
-    }
+    
 
     public void run() {
         while (true) {
             try {
-                ensureNewLine();
-                console.putString("----->");
-                ReadLine2 readLine = new ReadLine2(console);
-                readLine.loadLines(Arrays.asList(
-                        "He has starred in numerous other projects. His television series include",
-                        "fortunes of War for which he won an International Emmy Award.",
-                        "Branagh directed and starred in the romantic thriller Dead Again"));
-                var line = readLine.getLine();
+                console.ensureNewLine();
+                console.printString("----->");
+               // ReadLine2 readLine=new ReadLine2(console);
+                var line = readLine.readLine();
                 if (line.equalsIgnoreCase("exit")) {
                     break;
                 }
@@ -125,9 +134,9 @@ public class Forth {
                     processLine(line);
                 }
             } catch (Exception ex) {
-                ensureNewLine();
+                console.ensureNewLine();
                 ex.printStackTrace();
-                console.putString("ERROR: " + ex.getMessage());
+                console.printString("ERROR: " + ex.getMessage());
             }
         }
     }

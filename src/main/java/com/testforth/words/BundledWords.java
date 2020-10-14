@@ -78,7 +78,7 @@ public class BundledWords {
         @Override
         public void execute(Forth forth) {
             Object o2 = forth.pop();
-            forth.getConsole().putString(o2.toString());
+            forth.getConsole().printString(o2.toString());
         }
     }
 }

@@ -9,34 +9,44 @@ import java.util.List;
  * @author Dmitry
  */
 public class ReadLine {
-/*
+
+    private byte TEXT_ATTRIBUTE = (byte) 0xF0;
     private final TerminalWindow terminal;
     private byte[] prefix;
     private int prefixLength;
     private List<Line> lines = new ArrayList<>();
-    private int verticalScroll = 0;
-    private byte DEFAULT_ATTRIBUTE = (byte) 0xF0;
     private int screenBufferWidth = 80;
-    private int textFieldWidth = 79;
+    private int textFieldWidth = screenBufferWidth;
+    private int textFieldHeight = 25;
     private List<String> initialStrings;
+    private int verticalScroll;
+    private int countOfRemovedLines = 0;
+    private boolean completed = false;
+    private boolean skipPaint = false;
 
     public ReadLine(TerminalWindow terminal) {
         this.terminal = terminal;
     }
 
-    public String getLine() {
+    public String readLine() {
+        skipPaint = false;
+        completed = false;
+        lines.clear();
+        countOfRemovedLines = 0;
         copyPrefix();
-        verticalScroll = -terminal.getCursorY();
+        verticalScroll = terminal.getCursorY();
         if (initialStrings == null) {
             lines.add(new Line());
         } else {
             for (String line : initialStrings) {
                 appendString(line);
             }
+            initialStrings = null;
         }
-        
+
+        initialStrings = null;
         paint();
-        while (terminal.isVisible()) {
+        while (terminal.isVisible() && completed == false) {
             int key = terminal.waitKey();
             if (isPrintableChar(key)) {
                 char c = convertKeyToCharWithModifiers(key);
@@ -44,138 +54,193 @@ public class ReadLine {
             } else {
                 pressedNonSymbolKey(key);
             }
-            paint();
-        }
 
-        return "";
+            if (skipPaint == false) {
+                paint();
+            }
+            skipPaint = false;
+        }
+        terminal.ensureNewLine();
+        return toString();
     }
-    
-    public void loadLines(List<String>strings){
-        initialStrings=strings;
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder();
+        boolean first = true;
+        for (Line line : lines) {
+            if (first == false) {
+                sb.append("\n");
+            }
+            first = false;
+            sb.append(line.line);
+        }
+        return sb.toString();
+    }
+
+    public void loadLines(List<String> strings) {
+        initialStrings = strings;
     }
 
     private void appendString(String string) {
         Line line = new Line();
         line.line.append(string);
-        line.needRedraw = true;
         lines.add(line);
     }
 
-    private void typedVisibleChar(char c) {
-        int cursorX = terminal.getCursorX();
-        int cursorY = terminal.getCursorY();
+    private void paint() {
+        int firstVisibleLineIndex = getFirstVisibleLineIndex();
+        int lastVisibleLineIndex = getLastVisibleLineIndex();
+        if (firstVisibleLineIndex == -1) {
+            return;
+        }
 
-        int y = screenSpaceYToLineIndex(cursorY);
-        int x = screenSpaceXYToLineX(cursorX, cursorY);
-        Line line = lines.get(y);
-        line.line.insert(x, c);
-        line.needRedraw = true;
-        ensureLineWrappedIfNecessary(y);
-        invalidateLine(y);
-        moveCursorForward();
-        if (cursorX == textFieldWidth) {
+        int lineY = lineIndexToScreenY(firstVisibleLineIndex);
+        for (int i = firstVisibleLineIndex; i <= lastVisibleLineIndex; i++, lineY++) {
+            Line line = lines.get(i);
+            int xOffset = 0;
+            if (i == 0) {
+                xOffset += prefixLength;
+                printChars(prefix, 0, lineY);
+            }
+            printString(line, xOffset, lineY);
+            xOffset += line.size();
+            int remainingLength = textFieldWidth - xOffset;
+            terminal.putChars(' ', TEXT_ATTRIBUTE, xOffset, lineY, remainingLength);
+        }
+
+        //if some line was removed, we should erace remainigs from screen
+        if (countOfRemovedLines > 0) {
+            int lastLineY = lineIndexToScreenY(lines.size() - 1);
+            if (lastLineY >= 0 && lastLineY <= textFieldHeight) {
+                int redrawY = lastLineY + 1;
+                int countOfLinesToRedraw = textFieldHeight - redrawY;
+                for (int i = 0; i < countOfLinesToRedraw; i++, redrawY++) {
+                    terminal.putChars(' ', TEXT_ATTRIBUTE, 0, redrawY, textFieldWidth);
+                }
+            }
+        }
+
+        countOfRemovedLines = 0;
+    }
+
+    private int getFirstVisibleLineIndex() {
+        int firstVisibleLineIndex = 0;
+        if (verticalScroll < 0) {
+            firstVisibleLineIndex = -verticalScroll;
+        }
+        if (firstVisibleLineIndex >= lines.size()) {
+            return -1;
+        }
+        int lineRow = lineIndexToScreenY(firstVisibleLineIndex);
+        if (lineRow >= textFieldHeight) {
+            return -1;
+        }
+        return firstVisibleLineIndex;
+    }
+
+    private int getLastVisibleLineIndex() {
+        int firstVisibleLineIndex = getFirstVisibleLineIndex();
+        if (firstVisibleLineIndex == -1) {
+            return -1;
+        }
+
+        int y = lineIndexToScreenY(firstVisibleLineIndex);
+        int linesCount = textFieldHeight - y;
+        int lastLine = firstVisibleLineIndex + linesCount - 1;
+        if (lastLine > lines.size() - 1) {
+            lastLine = lines.size() - 1;
+        }
+        return lastLine;
+    }
+
+    private void typedVisibleChar(char c) {
+        int lineIndex = getCursorLineIndex();
+        int lineColumn = getCursorLineColumn();
+        Line line = lines.get(lineIndex);
+        line.line.insert(lineColumn, c);
+        ensureLineIsProperlyWrapped(lineIndex);
+        if (lineColumn == getScreenLineLength(lineIndex) - 1) {
             moveCursorForward();
         }
+
+        moveCursorForward();
     }
 
-    private void ensureLineWrappedIfNecessary(int lineIndex) {
+    private void enterKey() {
+        int lineColumn = getCursorLineColumn();
+        int lineIndex = getCursorLineIndex();
         Line line = lines.get(lineIndex);
-        int lineLength = line.line.length();
-        int maxLineLength = (lineIndex == 0) ? textFieldWidth - prefixLength : textFieldWidth;
-        int remainder = maxLineLength - lineLength;
-
-        if (remainder < 0) {//string go out of screen. We should do wrap
-            int remLength = -remainder;
-            String remainderString = line.line.substring(maxLineLength);
-            line.line.delete(maxLineLength, maxLineLength + remLength);
-            if (!isLineSoftWrapContinuation(lineIndex + 1)) {
-                Line newSoftWrappedLine = new Line();
-                newSoftWrappedLine.softWrapContinuation = true;
-                newSoftWrappedLine.line.append(remainderString);
-                newSoftWrappedLine.needRedraw = true;
-                lines.add(lineIndex + 1, newSoftWrappedLine);
-            } else {
-                Line softWrappedLine = lines.get(lineIndex + 1);
-                softWrappedLine.line.insert(0, remainderString);
-                softWrappedLine.needRedraw = true;
-                invalidatePaintAllLines();
-            }
-
-            ensureLineWrappedIfNecessary(lineIndex + 1);
-        } else if (remainder > 0) {//if next line is wrapped line, we should ajdust it properly
-            if (isLineSoftWrapContinuation(lineIndex + 1)) {
-                Line wrappedLine = lines.remove(lineIndex + 1);
-                line.line.append(wrappedLine.line);
-                line.needRedraw = true;
-                ensureLineWrappedIfNecessary(lineIndex);
-                invalidatePaintAllLines();
-            }
-        }
+        String part = line.line.substring(lineColumn, line.size());
+        line.line.delete(lineColumn, line.size());
+        Line newLine = new Line(false, part);
+        lines.add(lineIndex + 1, newLine);
+        countOfRemovedLines--;
+        setCursorPosition(0, lineIndex + 1);
     }
 
-    private void invalidatePaintAllLines() {
-        for (int i = 0; i < lines.size(); i++) {
-            invalidateLine(i);
-        }
-    }
-
-    private void invalidateLine(int lineIndex) {
-        Line line = lines.get(lineIndex);
-        line.needRedraw = true;
-    }
-
-    private void paintLine(int lineIndex) {
-        int screenY = lineIndexToScreenSpaceY(lineIndex);
-        if (screenY > 24 || screenY < 0) {
+    private void backspaceKey() {
+        int lineIndex = getCursorLineIndex();
+        int lineColumn = getCursorLineColumn();
+        if (lineIndex == 0 && lineColumn == 0) {
             return;
         }
-        Line line = lines.get(lineIndex);
-        if (line.needRedraw == false) {
-            return;
-        }
-        line.needRedraw = false;
-        int x = 0;
-        if (lineIndex == 0) {
-            printPrefix(screenY);
-            x = prefixLength;
-        }
-        int charsCount = line.line.length();
-        for (int i = 0; i < charsCount; i++, x++) {
-            char c = line.line.charAt(i);
-            terminal.putChar((byte) c, DEFAULT_ATTRIBUTE, x, screenY);
-        }
 
-        //clear text until end of the line
-        for (int i = x; i < textFieldWidth; i++) {
-            terminal.putChar((byte) ' ', DEFAULT_ATTRIBUTE, i, screenY);
-        }
-    }
-
-    private void paint() {
-        int firstLineY = lineIndexToScreenSpaceY(0);
-        int startLineIndex;
-        if (firstLineY >= 0) {
-            startLineIndex = 0;
+        if (lineColumn == 0) {
+            //removing from 0 cursor position, meaning that we should append this line to previous, and remove this line
+            Line currentLine = getLineByIndex(lineIndex);
+            Line previousLine = getLineByIndex(lineIndex - 1);
+            setCursorPosition(previousLine.size(), lineIndex - 1);
+            previousLine.line.append(currentLine.line);
+            lines.remove(lineIndex);
+            countOfRemovedLines++;
+            ensureLineIsProperlyWrapped(lineIndex - 1);
         } else {
-            startLineIndex = 0 - firstLineY;
-        }
-
-        int startLineIndexY = lineIndexToScreenSpaceY(startLineIndex);
-        int maxRemainsScreenHeight = 24 - startLineIndexY;
-        int maxIterations = lines.size() - startLineIndex;
-        if (maxIterations > maxRemainsScreenHeight) {
-            maxIterations = maxRemainsScreenHeight;
-        }
-        for (int i = startLineIndex; i < maxIterations; i++) {
-            paintLine(i);
+            //removing from somewhere inside line
+            Line line = lines.get(lineIndex);
+            line.line.delete(lineColumn - 1, lineColumn);
+            ensureLineIsProperlyWrapped(lineIndex);
+            moveCursorBackward();
         }
     }
 
-    private boolean isLineSoftWrapContinuation(int line) {
-        if (line >= lines.size()) {
-            return false;
+    private void ensureLineIsProperlyWrapped(int lineIndex) {
+        Line line = getLineByIndex(lineIndex);
+        int length = getLineLength(lineIndex);
+        int maxScreenLineLength = getScreenLineLength(lineIndex);
+        if (length < maxScreenLineLength - 1) {
+            if (isLineIsSoftWrapLine(lineIndex + 1)) {
+                // If we the next line is soft wrap, but current line is not so big. We should cut some part from soft wrap.
+                // If remaining from soft wrap becomes 0 - remove soft wrap line
+                int diff = maxScreenLineLength - 1 - length;
+                Line softWrapLine = getLineByIndex(lineIndex + 1);
+                if (diff > softWrapLine.size()) {
+                    diff = softWrapLine.size();
+                }
+
+                String part = softWrapLine.line.substring(0, diff);
+                softWrapLine.line.delete(0, diff);
+                line.line.append(part);
+                if (softWrapLine.size() == 0) {
+                    lines.remove(lineIndex + 1);
+                    countOfRemovedLines++;
+                } else {
+                    ensureLineIsProperlyWrapped(lineIndex + 1);
+                }
+            }
+        } else {
+            //Wrap long line on next line
+            String remainingPart = line.line.substring(maxScreenLineLength - 1);
+            line.line.delete(maxScreenLineLength - 1, line.line.length());
+            if (isLineIsSoftWrapLine(lineIndex + 1)) {
+                Line softWrapLine = getLineByIndex(lineIndex + 1);
+                softWrapLine.line.insert(0, remainingPart);
+            } else {
+                lines.add(lineIndex + 1, new Line(true, remainingPart));
+                countOfRemovedLines--;
+            }
+            ensureLineIsProperlyWrapped(lineIndex + 1);
         }
-        return lines.get(line).softWrapContinuation;
     }
 
     private void pressedNonSymbolKey(int key) {
@@ -188,94 +253,200 @@ public class ReadLine {
         if (key == TerminalWindow.KEY_DOWN) {
             moveCursorDown();
         }
+        if (key == TerminalWindow.KEY_UP) {
+            moveCursorUp();
+        }
+        if (key == TerminalWindow.KEY_HOME) {
+            moveCursorHome();
+        }
+        if (key == TerminalWindow.KEY_END) {
+            moveCursorEnd();
+        }
+        if (key == TerminalWindow.KEY_F1) {
+            terminal.moveLines(0, 5, 1);
+            skipPaint = true;
+        }
+        if (key == TerminalWindow.KEY_F2) {
+            terminal.moveLines(0, 5, -1);
+            skipPaint = true;
+        }
         if (key == TerminalWindow.KEY_ENTER) {
-            newLine();
+            if (terminal.isCtrlPressed()) {
+                completed = true;
+                int lastLineIndex = lines.size() - 1;
+                setCursorPosition(getLineLength(lastLineIndex), lastLineIndex);
+            } else {
+                enterKey();
+            }
         }
-    }
-
-    private void newLine() {
-        int cursorX = terminal.getCursorX();
-        int cursorY = terminal.getCursorY();
-
-        int lineIndex = screenSpaceYToLineIndex(cursorY);
-        int x = screenSpaceXYToLineX(cursorX, cursorY);
-        Line line = lines.get(lineIndex);
-        String remainderString = line.line.substring(x);
-        line.line.delete(x, line.line.length());
-        line.needRedraw = true;
-
-        Line newLine = new Line();
-        newLine.line.append(remainderString);
-        newLine.needRedraw = true;
-        lines.add(lineIndex + 1, newLine);
-        ensureLineWrappedIfNecessary(lineIndex + 1);
-        invalidatePaintAllLines();
-    }
-
-    private int lineIndexToScreenSpaceY(int lineIndex) {
-        return lineIndex - verticalScroll;
-    }
-    
-    private int screenSpaceYToLineIndex(int y) {
-        int lineIndex = y + verticalScroll;
-        return lineIndex;
-    }
-
-    private int screenSpaceXYToLineX(int x, int y) {
-        int lineIndex = screenSpaceYToLineIndex(y);
-        if (lineIndex == 0) {
-            return x - prefixLength;
-        }
-        return x;
-    }
-
-    private int lineXToScreenSpaceX(int lineX, int lineIndex) {
-        if (lineIndex == 0) {
-            return prefixLength+lineX;
-        }
-        return lineX;
-    }
-
-    private void printPrefix(int y) {
-        for (int i = 0; i < prefixLength; i++) {
-            byte c = prefix[i * 2];
-            byte attribute = prefix[i * 2 + 1];
-            terminal.putChar(c, attribute, i, y);
+        if (key == TerminalWindow.KEY_BACK_SPACE) {
+            backspaceKey();
         }
     }
 
     private void copyPrefix() {
-        int bufferLineStartPosition = terminal.getCursorY() * screenBufferWidth * 2;
+        prefix = terminal.readBuffer(0, terminal.getCursorY(), terminal.getCursorX());
         prefixLength = terminal.getCursorX();
-        int prefixBytesLength = prefixLength * 2;
-        prefix = new byte[prefixBytesLength];
-        for (int i = 0; i < prefixBytesLength; i++) {
-            prefix[i] = terminal.readFromBuffer(bufferLineStartPosition + i);
-        }
     }
 
     private void moveCursorForward() {
-        int lineIndex=screenSpaceYToLineIndex(terminal.getCursorY());
-        int maxLineScreenX=lineXToScreenSpaceX(lines.get(lineIndex).line.length(), lineIndex);
-        
-        System.out.println("maxLineScreenX:"+maxLineScreenX+" cursorX:"+terminal.getCursorX());
-        int pos = terminal.getCursorY() * screenBufferWidth + terminal.getCursorX();
-        pos++;
-        int y = pos / screenBufferWidth;
-        int x = pos - y * screenBufferWidth;
-        terminal.setCursorXY(x, y);
+        int lineIndex = getCursorLineIndex();
+        int lineColumn = getCursorLineColumn();
+        if (isEndOfLinePosition(lineColumn, lineIndex) && !isLastLine(lineIndex)) {
+            setCursorPosition(0, lineIndex + 1);
+        } else {
+            setCursorPosition(lineColumn + 1, lineIndex);
+        }
     }
 
     private void moveCursorBackward() {
-        int pos = terminal.getCursorY() * screenBufferWidth + terminal.getCursorX();
-        pos--;
-        int y = pos / screenBufferWidth;
-        int x = pos - y * screenBufferWidth;
-        terminal.setCursorXY(x, y);
+        int lineIndex = getCursorLineIndex();
+        int lineColumn = getCursorLineColumn();
+        if (lineColumn == 0 && lineIndex != 0) {
+            setCursorPosition(getLineLength(lineIndex - 1), lineIndex - 1);
+        } else {
+            setCursorPosition(lineColumn - 1, lineIndex);
+        }
     }
 
     private void moveCursorDown() {
+        int lineIndex = getCursorLineIndex();
+        int lineColumn = getCursorLineColumn();
+        setCursorPosition(lineColumn, lineIndex + 1);
+    }
 
+    private void moveCursorUp() {
+        int lineIndex = getCursorLineIndex();
+        int lineColumn = getCursorLineColumn();
+        setCursorPosition(lineColumn, lineIndex - 1);
+    }
+
+    private void moveCursorHome() {
+        int lineIndex = getCursorLineIndex();
+        setCursorPosition(0, lineIndex);
+    }
+
+    private void moveCursorEnd() {
+        int lineIndex = getCursorLineIndex();
+        setCursorPosition(getLineLength(lineIndex), lineIndex);
+    }
+
+    private boolean isEndOfLinePosition(int lineColumn, int lineIndex) {
+        int lineLength = getLineLength(lineIndex);
+        return lineColumn >= lineLength;
+    }
+
+    private boolean isLineIsSoftWrapLine(int lineIndex) {
+        Line line = getLineByIndex(lineIndex);
+        return line != null && line.softWrapContinuation == true;
+    }
+
+    private Line getLineByIndex(int lineIndex) {
+        if (lineIndex < 0 || lineIndex >= lines.size()) {
+            return null;
+        }
+
+        return lines.get(lineIndex);
+    }
+
+    public void setCursorPosition(int lineColumn, int lineIndex) {
+        if (lineIndex < 0) {
+            lineIndex = 0;
+        }
+        if (lineIndex >= lines.size()) {
+            lineIndex = lines.size() - 1;
+        }
+        if (lineColumn < 0) {
+            lineColumn = 0;
+        }
+        int lineLength = getLineLength(lineIndex);
+        if (lineColumn > lineLength) {
+            lineColumn = lineLength;
+        }
+
+        int firstVisibleLineIndex = getFirstVisibleLineIndex();
+        int lastVisibleLineIndex = getLastVisibleLineIndex();
+        if (firstVisibleLineIndex == -1) {
+            return;
+        }
+
+        int cy;
+        //if desired line is higher than scrolling window
+        if (lineIndex < firstVisibleLineIndex) {
+            // scroll down
+            int difference = firstVisibleLineIndex - lineIndex;
+            verticalScroll += difference;
+            cy = 0;
+        } else if (lineIndex > lastVisibleLineIndex) {
+            // scroll up
+            int difference = lineIndex - lastVisibleLineIndex;
+            verticalScroll -= difference;
+            scrollTopPartOfTextField(-difference);
+            cy = textFieldHeight - 1;
+        } else {
+            cy = lineIndexToScreenY(lineIndex);
+        }
+
+        int cx = (lineIndex == 0) ? lineColumn + prefixLength : lineColumn;
+        terminal.setCursorXY(cx, cy);
+    }
+
+    /**
+     * Function scrolls the lines that was there before ReadLine was executed
+     */
+    private void scrollTopPartOfTextField(int distance) {
+        int firstLineY = lineIndexToScreenY(0);
+        int lineToScroll = firstLineY;
+        if (lineToScroll > 0 && lineToScroll <= textFieldHeight) {
+            terminal.moveLines(0, lineToScroll, distance);
+        }
+    }
+
+    private int getCursorLineIndex() {
+        return terminal.getCursorY() - verticalScroll;
+    }
+
+    private int getCursorLineColumn() {
+        if (getCursorLineIndex() == 0) {
+            return terminal.getCursorX() - prefixLength;
+        }
+
+        return terminal.getCursorX();
+    }
+
+    private int lineIndexToScreenY(int lineIndex) {
+        return lineIndex + verticalScroll;
+    }
+
+    private int getLineLength(int lineIndex) {
+        return lines.get(lineIndex).size();
+    }
+
+    private int getScreenLineLength(int lineIndex) {
+        int length = textFieldWidth;
+        if (lineIndex == 0) {
+            length -= prefixLength;
+        }
+
+        return length;
+    }
+
+    private boolean isLastLine(int lineIndex) {
+        return (lines.size() - 1) == lineIndex;
+    }
+
+    private void printChars(byte[] buffer, int x, int y) {
+        for (int i = 0; i < buffer.length; i += 2, x++) {
+            byte c = buffer[i];
+            byte attribute = buffer[i + 1];
+            terminal.putChar(c, attribute, x, y);
+        }
+    }
+
+    private void printString(Line line, int x, int y) {
+        for (int i = 0; i < line.size(); i++) {
+            terminal.putChar((byte) line.line.charAt(i), TEXT_ATTRIBUTE, x + i, y);
+        }
     }
 
     private char convertKeyToCharWithModifiers(int key) {
@@ -390,5 +561,5 @@ public class ReadLine {
                 return "zZ";
         }
         return "☺☺";
-    }*/
+    }
 }

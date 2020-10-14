@@ -10,6 +10,8 @@ import java.awt.RenderingHints;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.geom.Rectangle2D;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -31,11 +33,12 @@ public class TerminalWindow extends JFrame {
     private int cursorX = 0;
     private int cursorY = 0;
     private BlockingQueue<Integer> keysQueue = new ArrayBlockingQueue<>(20);
-    
+
     private final byte[] buffer = new byte[80 * 25 * 2];
     private boolean shiftPressed = false;
     private boolean altPressed = false;
     private boolean ctrlPressed = false;
+    private final byte DEFAULT_CHAR_ATTRIBUTE=(byte) 0xF0;
 
     private final Color[] backgroundColors = new Color[]{
         new Color(0, 0, 0),
@@ -68,6 +71,7 @@ public class TerminalWindow extends JFrame {
 
     public TerminalWindow() throws HeadlessException {
         setTitle("Terminal");
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
         //fill attributes
         for (int i = 0; i < 80 * 25; i++) {
             buffer[i * 2 + 1] = (byte) 0xF0;
@@ -225,7 +229,7 @@ public class TerminalWindow extends JFrame {
         }
         this.cursorX = cursorX;
         this.cursorY = cursorY;
-        System.out.println("CursorXY "+this.cursorX+" "+this.cursorY);
+        //System.out.println("CursorXY "+this.cursorX+" "+this.cursorY);
 
         dirty.addAndGet(1);
     }
@@ -252,15 +256,64 @@ public class TerminalWindow extends JFrame {
         return 0;
     }
 
-    public void putString(String str) {
-        for (char c : str.toCharArray()) {
-            putChar(c);
+    public void moveLines(int startLineY, int endLineY, int offset) {
+        if (offset == 0 || startLineY == endLineY) {
+            return;
+        }
+
+        //read lines that should be scrolled
+        List<byte[]> linesBuffers = new ArrayList<>();
+        int linesCount=endLineY-startLineY+1;
+        {
+            int currentLine = startLineY;
+            for (int i = 0; i < linesCount; i++, currentLine++) {
+                byte[] lineBuffer = readBuffer(0, currentLine, 80);
+                linesBuffers.add(lineBuffer);
+            }
+
+            if (endLineY >= 25) {
+                endLineY = 24;
+            }
+        }
+
+        int currentLineY = startLineY;
+        for (int i = 0; i < linesCount; i++, currentLineY++) {
+            int newLineY = currentLineY + offset;
+            if (newLineY >= startLineY && newLineY <= endLineY) {
+                putBuffer(linesBuffers.get(i), 0, newLineY);
+            }
         }
     }
 
-    public void putChar(char c) {
+    private void putBuffer(byte[]buffer, int x, int y){
+        for (int i = 0; i < buffer.length; i += 2, x++) {
+            byte c = buffer[i];
+            byte attribute = buffer[i + 1];
+            putChar(c, attribute, x, y);
+        }
+    }
+
+    public void putChars(char c, byte attribute, int x, int y, int count) {
+        for (int i = 0; i < count; i++) {
+            putChar((byte) c, attribute, x + i, y);
+        }
+    }
+
+    public void printString(String str) {
+        for (char c : str.toCharArray()) {
+            printChar(c);
+        }
+    }
+
+    public void printChar(char c) {
         if (c == '\n') {
-            setCursorXY(0, getCursorY() + 1);
+            int lineIndex=getCursorY();
+            if(lineIndex==24){
+                moveLines(0, 24, -1);
+                putChars(' ', DEFAULT_CHAR_ATTRIBUTE, 0, 24, 80);
+            }
+
+            setCursorXY(0, lineIndex + 1);
             return;
         }
         int pos = (getCursorY() * 80 + getCursorX());
@@ -270,7 +323,7 @@ public class TerminalWindow extends JFrame {
         cursorX = pos - (cursorY * 80);
         dirty.addAndGet(1);
     }
-    
+
     public void putChar(char c, int x, int y) {
         int pos = (y * 80 + x);
         int byteOffset=pos*2;
@@ -278,7 +331,7 @@ public class TerminalWindow extends JFrame {
         buffer[byteOffset+1] =(byte) 0xF0;
         dirty.addAndGet(1);
     }
-    
+
     /*
     read bytes from framebuffer. buffer.length = charsCount*2
     */
@@ -290,12 +343,18 @@ public class TerminalWindow extends JFrame {
         }
         return _buffer;
     }
-    
+
     public void putChar(byte c, byte attribute, int x, int y) {
         int pos = (y * 80 + x);
         buffer[pos * 2] = c;
         buffer[pos * 2+1] =attribute;
         dirty.addAndGet(1);
+    }
+
+    public void ensureNewLine() {
+        if (getCursorX() != 0) {
+            printChar('\n');
+        }
     }
 
     public static final int KEY_ESCAPE = 0;

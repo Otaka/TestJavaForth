@@ -8,6 +8,18 @@ public class Line {
     public StringBuilder line = new StringBuilder();
     public boolean softWrapContinuation = false;
 
+    public Line() {
+    }
+
+    public Line(boolean softWrap, String text) {
+        softWrapContinuation = softWrap;
+        line.append(text);
+    }
+    
+    public int size(){
+        return line.length();
+    }
+
     @Override
     public String toString() {
         String result;
